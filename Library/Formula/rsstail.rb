@@ -1,7 +1,10 @@
 class Rsstail < Formula
+  desc "Monitors an RSS feed and emits new entries when detected"
   homepage "http://www.vanheusden.com/rsstail/"
   url "http://www.vanheusden.com/rsstail/rsstail-1.8.tgz"
   sha256 "19284f3eca4bfa649f53848e19e6ee134bce17ccf2a22919cc8c600684877801"
+
+  head "https://github.com/flok99/rsstail.git"
 
   bottle do
     cellar :any
@@ -12,16 +15,8 @@ class Rsstail < Formula
 
   depends_on "libmrss"
 
-  head "https://github.com/flok99/rsstail.git"
-
   def install
-    if build.head?
-      # Upstream bug: https://github.com/flok99/rsstail/pull/10
-      ENV.append "LDFLAGS", "-liconv -lmrss"
-      system "make", "-e"
-    else
-      system "make"
-    end
+    system "make"
     man1.install "rsstail.1"
     bin.install "rsstail"
   end

@@ -51,17 +51,19 @@ class FormulaUnavailableError < RuntimeError
 end
 
 class TapFormulaUnavailableError < FormulaUnavailableError
-  attr_reader :user, :repo, :shortname
+  attr_reader :tap, :user, :repo
 
-  def initialize name
-    super
-    @user, @repo, @shortname = name.split("/", 3)
+  def initialize tap, name
+    @tap = tap
+    @user = tap.user
+    @repo = tap.repo
+    super "#{tap}/#{name}"
   end
 
-  def to_s; <<-EOS.undent
-      No available formula for #{shortname} #{dependent_s}
-      Please tap it and then try again: brew tap #{user}/#{repo}
-    EOS
+  def to_s
+    s = super
+    s += "\nPlease tap it and then try again: brew tap #{tap}" unless tap.installed?
+    s
   end
 end
 
@@ -84,6 +86,18 @@ class TapFormulaAmbiguityError < RuntimeError
   end
 end
 
+class TapUnavailableError < RuntimeError
+  attr_reader :name
+
+  def initialize name
+    @name = name
+
+    super <<-EOS.undent
+      No available tap #{name}.
+    EOS
+  end
+end
+
 class OperationInProgressError < RuntimeError
   def initialize name
     message = <<-EOS.undent
@@ -100,7 +114,7 @@ class CannotInstallFormulaError < RuntimeError; end
 
 class FormulaInstallationAlreadyAttemptedError < RuntimeError
   def initialize(formula)
-    super "Formula installation already attempted: #{formula.name}"
+    super "Formula installation already attempted: #{formula.full_name}"
   end
 end
 
@@ -132,7 +146,7 @@ class FormulaConflictError < RuntimeError
 
   def message
     message = []
-    message << "Cannot install #{formula.name} because conflicting formulae are installed.\n"
+    message << "Cannot install #{formula.full_name} because conflicting formulae are installed.\n"
     message.concat conflicts.map { |c| conflict_message(c) } << ""
     message << <<-EOS.undent
       Please `brew unlink #{conflicts.map(&:name)*' '}` before continuing.
@@ -193,7 +207,7 @@ class BuildError < RuntimeError
       ohai "ENV"
       Homebrew.dump_build_env(env)
       puts
-      onoe "#{formula.name} #{formula.version} did not build"
+      onoe "#{formula.full_name} #{formula.version} did not build"
       unless (logs = Dir["#{formula.logs}/*"]).empty?
         puts "Logs:"
         puts logs.map{|fn| "     #{fn}"}.join("\n")
@@ -204,6 +218,11 @@ class BuildError < RuntimeError
       puts "These open issues may also help:"
       puts issues.map{ |i| "#{i['title']} (#{i['html_url']})" }.join("\n")
     end
+
+    if MacOS.version >= "10.11"
+      require "cmd/doctor"
+      opoo Checks.new.check_for_unsupported_osx
+    end
   end
 end
 
@@ -212,7 +231,7 @@ end
 class CompilerSelectionError < RuntimeError
   def initialize(formula)
     super <<-EOS.undent
-      #{formula.name} cannot be built with any available compilers.
+      #{formula.full_name} cannot be built with any available compilers.
       To install this formula, you may need to:
         brew install gcc
       EOS
@@ -273,7 +292,7 @@ end
 
 class ResourceMissingError < ArgumentError
   def initialize(formula, resource)
-    super "#{formula.name} does not define resource #{resource.inspect}"
+    super "#{formula.full_name} does not define resource #{resource.inspect}"
   end
 end
 

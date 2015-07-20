@@ -1,5 +1,5 @@
 require "extend/pathname"
-require "keg_fix_install_names"
+require "keg_relocate"
 require "formula_lock"
 require "ostruct"
 
@@ -222,6 +222,7 @@ class Keg
     dir = case shell
           when :bash then path.join("etc", "bash_completion.d")
           when :zsh  then path.join("share", "zsh", "site-functions")
+          when :fish then path.join("share", "fish", "vendor_completions.d")
           end
     dir && dir.directory? && dir.children.any?
   end
@@ -273,6 +274,7 @@ class Keg
       # all icons subfolders should also mkpath
       when /^icons\// then :mkpath
       when /^zsh/ then :mkpath
+      when /^fish/ then :mkpath
       else :link
       end
     end

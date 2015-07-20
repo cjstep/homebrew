@@ -27,14 +27,14 @@ module Homebrew
     # this procedure will be removed in the future if it seems unnecessasry
     rename_taps_dir_if_necessary
 
-    each_tap do |user, repo|
-      repo.cd do
-        updater = Updater.new(repo)
+    Tap.each do |tap|
+      tap.path.cd do
+        updater = Updater.new(tap.path)
 
         begin
           updater.pull!
         rescue
-          onoe "Failed to update tap: #{user.basename}/#{repo.basename.sub("homebrew-", "")}"
+          onoe "Failed to update tap: #{tap}"
         else
           report.update(updater.report) do |key, oldval, newval|
             oldval.concat(newval)
@@ -122,10 +122,26 @@ class Updater
 
   def initialize(repository)
     @repository = repository
+    @stashed = false
   end
 
-  def pull!
-    safe_system "git", "checkout", "-q", "master"
+  def pull!(options={})
+    quiet = []
+    quiet << "--quiet" unless ARGV.verbose?
+
+    unless system "git", "diff", "--quiet"
+      unless options[:silent]
+        puts "Stashing your changes:"
+        system "git", "status", "--short", "--untracked-files"
+      end
+      safe_system "git", "stash", "save", "--include-untracked", *quiet
+      @stashed = true
+    end
+
+    @initial_branch = `git symbolic-ref --short HEAD`.chomp
+    if @initial_branch != "master" && !@initial_branch.empty?
+      safe_system "git", "checkout", "master", *quiet
+    end
 
     @initial_revision = read_current_revision
 
@@ -134,12 +150,25 @@ class Updater
 
     args = ["pull"]
     args << "--rebase" if ARGV.include? "--rebase"
-    args << "-q" unless ARGV.verbose?
+    args += quiet
     args << "origin"
     # the refspec ensures that 'origin/master' gets updated
     args << "refs/heads/master:refs/remotes/origin/master"
 
     reset_on_interrupt { safe_system "git", *args }
+
+    if @initial_branch != "master" && !@initial_branch.empty?
+      safe_system "git", "checkout", @initial_branch, *quiet
+    end
+
+    if @stashed
+      safe_system "git", "stash", "pop", *quiet
+      unless options[:silent]
+        puts "Restored your changes:"
+        system "git", "status", "--short", "--untracked-files"
+      end
+      @stashed = false
+    end
 
     @current_revision = read_current_revision
   end
@@ -148,7 +177,9 @@ class Updater
     ignore_interrupts { yield }
   ensure
     if $?.signaled? && $?.termsig == 2 # SIGINT
+      safe_system "git", "checkout", @initial_branch
       safe_system "git", "reset", "--hard", @initial_revision
+      safe_system "git", "stash", "pop" if @stashed
     end
   end
 
@@ -164,8 +195,20 @@ class Updater
         next unless paths.any? { |p| File.dirname(p) == formula_directory }
 
         case status
-        when "A", "M", "D"
+        when "A", "D"
           map[status.to_sym] << repository.join(src)
+        when "M"
+          file = repository.join(src)
+          begin
+            require "formula_versions"
+            formula = Formulary.factory(file)
+            new_version = formula.pkg_version
+            old_version = FormulaVersions.new(formula).formula_at_revision(@initial_revision, &:pkg_version)
+            next if new_version == old_version
+          rescue LoadError, FormulaUnavailableError => e
+            onoe e if ARGV.homebrew_developer?
+          end
+          map[:M] << file
         when /^R\d{0,3}/
           map[:D] << repository.join(src) if File.dirname(src) == formula_directory
           map[:A] << repository.join(dst) if File.dirname(dst) == formula_directory
@@ -236,18 +279,6 @@ class Report
     dump_formula_report :A, "New Formulae"
     dump_formula_report :M, "Updated Formulae"
     dump_formula_report :D, "Deleted Formulae"
-  end
-
-  def tapped_formula_for key
-    fetch(key, []).select { |path| HOMEBREW_TAP_PATH_REGEX === path.to_s }
-  end
-
-  def new_tapped_formula
-    tapped_formula_for :A
-  end
-
-  def removed_tapped_formula
-    tapped_formula_for :D
   end
 
   def select_formula key

@@ -62,7 +62,7 @@ class FormulaInstaller
 
     bottle = formula.bottle
     return true  if force_bottle? && bottle
-    return false if build_from_source? || build_bottle? || interactive?
+    return false if build_from_source? || build_bottle? || interactive? || formula.file_modified?
     return false unless options.empty?
 
     return true if formula.local_bottle_path
@@ -70,7 +70,7 @@ class FormulaInstaller
 
     unless bottle.compatible_cellar?
       if install_bottle_options[:warn]
-        opoo "Building source; cellar of #{formula.name}'s bottle is #{bottle.cellar}"
+        opoo "Building source; cellar of #{formula.full_name}'s bottle is #{bottle.cellar}"
       end
       return false
     end
@@ -104,7 +104,7 @@ class FormulaInstaller
       end
     end
   rescue FormulaUnavailableError => e
-    e.dependent = formula.name
+    e.dependent = formula.full_name
     raise
   end
 
@@ -116,7 +116,7 @@ class FormulaInstaller
         dep.installed? and not dep.keg_only? and not dep.linked_keg.directory?
       end
       raise CannotInstallFormulaError,
-        "You must `brew link #{unlinked_deps*' '}' before #{formula.name} can be installed" unless unlinked_deps.empty?
+        "You must `brew link #{unlinked_deps*' '}' before #{formula.full_name} can be installed" unless unlinked_deps.empty?
     end
   end
 
@@ -157,10 +157,10 @@ class FormulaInstaller
     formula.deprecated_flags.each do |deprecated_option|
       old_flag = deprecated_option.old_flag
       new_flag = deprecated_option.current_flag
-      opoo "#{formula.name}: #{old_flag} was deprecated; using #{new_flag} instead!"
+      opoo "#{formula.full_name}: #{old_flag} was deprecated; using #{new_flag} instead!"
     end
 
-    oh1 "Installing #{Tty.green}#{formula.name}#{Tty.reset}" if show_header?
+    oh1 "Installing #{Tty.green}#{formula.full_name}#{Tty.reset}" if show_header?
 
     @@attempted << formula
 
@@ -180,6 +180,12 @@ class FormulaInstaller
     build_bottle_preinstall if build_bottle?
 
     unless @poured_bottle
+      if formula.file_modified?
+        filename = formula.path.to_s.gsub("#{HOMEBREW_PREFIX}/", "")
+        opoo "Formula file is modified!"
+        puts "Building from source because #{filename} has local changes"
+        puts "To install from a bottle instead, run with --force-bottle"
+      end
       compute_and_install_dependencies if @pour_failed and not ignore_deps?
       build
       clean
@@ -217,7 +223,7 @@ class FormulaInstaller
     deps = expand_dependencies(req_deps + formula.deps)
 
     if deps.empty? and only_deps?
-      puts "All dependencies for #{formula.name} are satisfied."
+      puts "All dependencies for #{formula.full_name} are satisfied."
     else
       install_dependencies(deps)
     end
@@ -239,6 +245,7 @@ class FormulaInstaller
   def install_requirement_default_formula?(req, dependent, build)
     return false unless req.default_formula?
     return true unless req.satisfied?
+    return false if req.tags.include?(:run)
     install_bottle_for?(dependent, build) || build_bottle?
   end
 
@@ -311,7 +318,7 @@ class FormulaInstaller
 
   def install_dependencies(deps)
     if deps.length > 1
-      oh1 "Installing dependencies for #{formula.name}: #{Tty.green}#{deps.map(&:first)*", "}#{Tty.reset}"
+      oh1 "Installing dependencies for #{formula.full_name}: #{Tty.green}#{deps.map(&:first)*", "}#{Tty.reset}"
     end
 
     deps.each { |dep, options| install_dependency(dep, options) }
@@ -355,7 +362,7 @@ class FormulaInstaller
     fi.verbose            = verbose? && !quieter?
     fi.debug              = debug?
     fi.prelude
-    oh1 "Installing #{formula.name} dependency: #{Tty.green}#{dep.name}#{Tty.reset}"
+    oh1 "Installing #{formula.full_name} dependency: #{Tty.green}#{dep.name}#{Tty.reset}"
     fi.install
     fi.caveats
     fi.finish
@@ -395,7 +402,7 @@ class FormulaInstaller
 
     if build_bottle? && formula.post_install_defined?
       ohai "Not running post_install as we're building a bottle"
-      puts "You can run it manually using `brew postinstall #{formula.name}`"
+      puts "You can run it manually using `brew postinstall #{formula.full_name}`"
     else
       post_install
     end
@@ -403,7 +410,7 @@ class FormulaInstaller
     ohai "Summary" if verbose? or show_summary_heading?
     puts summary
   ensure
-    unlock if hold_locks?
+    unlock
   end
 
   def emoji
@@ -510,7 +517,7 @@ class FormulaInstaller
         keg.optlink
       rescue Keg::LinkError => e
         onoe "Failed to create #{formula.opt_prefix}"
-        puts "Things that depend on #{formula.name} will probably not build."
+        puts "Things that depend on #{formula.full_name} will probably not build."
         puts e
         Homebrew.failed = true
       end
@@ -598,7 +605,7 @@ class FormulaInstaller
     Homebrew.run_post_install(formula)
   rescue Exception => e
     opoo "The post-install step did not complete successfully"
-    puts "You can try again using `brew postinstall #{formula.name}`"
+    puts "You can try again using `brew postinstall #{formula.full_name}`"
     ohai e, e.backtrace if debug?
     Homebrew.failed = true
     @show_summary_heading = true
@@ -609,8 +616,8 @@ class FormulaInstaller
       return if Homebrew::Hooks::Bottles.pour_formula_bottle(formula)
     end
 
-    if formula.local_bottle_path
-      downloader = LocalBottleDownloadStrategy.new(formula)
+    if (bottle_path = formula.local_bottle_path)
+      downloader = LocalBottleDownloadStrategy.new(bottle_path)
     else
       downloader = formula.bottle
       downloader.verify_download_integrity(downloader.fetch)
@@ -625,12 +632,13 @@ class FormulaInstaller
     end
     FileUtils.rm_rf formula.bottle_prefix
 
+    tab = Tab.for_keg(formula.prefix)
+
     CxxStdlib.check_compatibility(
       formula, formula.recursive_dependencies,
-      Keg.new(formula.prefix), MacOS.default_compiler
+      Keg.new(formula.prefix), tab.compiler
     )
 
-    tab = Tab.for_keg(formula.prefix)
     tab.tap = formula.tap
     tab.poured_from_bottle = true
     tab.write
@@ -673,27 +681,5 @@ class FormulaInstaller
       @@locked.clear
       @hold_locks = false
     end
-  end
-end
-
-
-class Formula
-  def keg_only_text
-    s = "This formula is keg-only, which means it was not symlinked into #{HOMEBREW_PREFIX}."
-    s << "\n\n#{keg_only_reason.to_s}"
-    if lib.directory? or include.directory?
-      s <<
-        <<-EOS.undent_________________________________________________________72
-
-
-        Generally there are no consequences of this for you. If you build your
-        own software and it requires this formula, you'll need to add to your
-        build variables:
-
-        EOS
-      s << "    LDFLAGS:  -L#{opt_lib}\n" if lib.directory?
-      s << "    CPPFLAGS: -I#{opt_include}\n" if include.directory?
-    end
-    s << "\n"
   end
 end

@@ -1,4 +1,5 @@
 class Qemu < Formula
+  desc "x86 and PowerPC Emulator"
   homepage "http://wiki.qemu.org"
   url "http://wiki.qemu-project.org/download/qemu-2.3.0.tar.bz2"
   sha256 "b6bab7f763d5be73e7cb5ee7d4c8365b7a8df2972c52fa5ded18893bd8281588"
@@ -13,8 +14,8 @@ class Qemu < Formula
   patch do
     # Fix for VENOM <http://venom.fail>
     # Patch from QEMU Git
-    url "http://git.qemu.org/?p=qemu.git;a=commitdiff_plain;h=e907746266721f305d67bc0718795fedee2e824c"
-    sha256 "a182ee0e5d6aa040dea51796a410827e8c0b3b928c864846c6e5a1754dde9c88"
+    url "https://gist.githubusercontent.com/mtpereira/77dd144343bf24552aad/raw/0f22e76e50013f40a4c4d6dee1a6ec2a1ffea18b/qemu-venom.patch"
+    sha256 "2aaa9ff9ee492dede64df3fcb59032ae0452bf4790c2d5881e05981fa7452368"
   end
 
   depends_on "pkg-config" => :build

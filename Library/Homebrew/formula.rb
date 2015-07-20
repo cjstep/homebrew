@@ -9,6 +9,7 @@ require 'formulary'
 require 'software_spec'
 require 'install_renamed'
 require 'pkg_version'
+require 'tap'
 
 # A formula provides instructions and metadata for Homebrew to install a piece
 # of software. Every Homebrew formula is a {Formula}.
@@ -27,6 +28,11 @@ class Formula
   # The name of this {Formula}.
   # e.g. `this-formula`
   attr_reader :name
+
+  # The fully-qualified name of this {Formula}.
+  # For core formula it's the same as {#name}.
+  # e.g. `homebrew/tap-name/this-formula`
+  attr_reader :full_name
 
   # The full path to this {Formula}.
   # e.g. `/usr/local/Library/Formula/this-formula.rb`
@@ -87,6 +93,12 @@ class Formula
     @name = name
     @path = path
     @revision = self.class.revision || 0
+
+    if path.to_s =~ HOMEBREW_TAP_PATH_REGEX
+      @full_name = "#{$1}/#{$2.gsub(/^homebrew-/, "")}/#{name}"
+    else
+      @full_name = name
+    end
 
     set_spec :stable
     set_spec :devel
@@ -375,6 +387,12 @@ class Formula
   # `brew link` for formulae that are not keg-only.
   def share;   prefix+'share'   end
 
+  # The directory where the formula's shared files should be installed,
+  # with the name of the formula appended to avoid linking conflicts.
+  # This is symlinked into `HOMEBREW_PREFIX` after installation or with
+  # `brew link` for formulae that are not keg-only.
+  def pkgshare;    prefix+'share'+name    end
+
   # The directory where the formula's Frameworks should be installed.
   # This is symlinked into `HOMEBREW_PREFIX` after installation or with
   # `brew link` for formulae that are not keg-only.
@@ -403,13 +421,19 @@ class Formula
   # installed.
   # This is symlinked into `HOMEBREW_PREFIX` after installation or with
   # `brew link` for formulae that are not keg-only.
-  def bash_completion; prefix+'etc/bash_completion.d' end
+  def bash_completion; prefix+'etc/bash_completion.d'    end
 
   # The directory where the formula's ZSH completion files should be
   # installed.
   # This is symlinked into `HOMEBREW_PREFIX` after installation or with
   # `brew link` for formulae that are not keg-only.
-  def zsh_completion;  share+'zsh/site-functions'     end
+  def zsh_completion;  share+'zsh/site-functions'        end
+
+  # The directory where the formula's fish completion files should be
+  # installed.
+  # This is symlinked into `HOMEBREW_PREFIX` after installation or with
+  # `brew link` for formulae that are not keg-only.
+  def fish_completion; share+'fish/vendor_completions.d' end
 
   # The directory used for as the prefix for {#etc} and {#var} files on
   # installation so, despite not being in `HOMEBREW_CELLAR`, they are installed
@@ -445,6 +469,7 @@ class Formula
   def opt_libexec; opt_prefix+'libexec' end
   def opt_sbin;    opt_prefix+'sbin'    end
   def opt_share;   opt_prefix+'share'   end
+  def opt_frameworks; opt_prefix+'Frameworks' end
 
   # Can be overridden to selectively disable bottles from formulae.
   # Defaults to true so overridden version does not have to check if bottles
@@ -576,6 +601,14 @@ class Formula
     s << ") #{path}>"
   end
 
+  def file_modified?
+    return false unless which("git")
+    path.parent.cd do
+      diff = Utils.popen_read("git", "diff", "origin/master", "--", "#{path}")
+      !diff.empty? && $?.exitstatus == 0
+    end
+  end
+
   # Standard parameters for CMake builds.
   # Setting CMAKE_FIND_FRAMEWORK to "LAST" tells CMake to search for our
   # libraries before trying to utilize Frameworks, many of which will be from
@@ -598,36 +631,29 @@ class Formula
   def python(options={}, &block)
     opoo 'Formula#python is deprecated and will go away shortly.'
     block.call if block_given?
-    PythonDependency.new
+    PythonRequirement.new
   end
   alias_method :python2, :python
   alias_method :python3, :python
 
   # an array of all core {Formula} names
   def self.core_names
-    Dir["#{HOMEBREW_LIBRARY}/Formula/*.rb"].map{ |f| File.basename f, ".rb" }.sort
+    @core_names ||= Dir["#{HOMEBREW_LIBRARY}/Formula/*.rb"].map{ |f| File.basename f, ".rb" }.sort
   end
 
   # an array of all tap {Formula} names
   def self.tap_names
-    names = []
-    Pathname.glob("#{HOMEBREW_LIBRARY}/Taps/*/*/") do |tap|
-      tap.find_formula do |formula|
-        formula.to_s =~ HOMEBREW_TAP_PATH_REGEX
-        names << "#{$1}/#{$2.gsub(/^homebrew-/, "")}/#{formula.basename(".rb")}"
-      end
-    end
-    names.sort
+    @tap_names ||= Tap.map(&:formula_names).flatten.sort
   end
 
   # an array of all {Formula} names
   def self.names
-    (core_names + tap_names.map { |name| name.split("/")[-1] }).sort.uniq
+    @names ||= (core_names + tap_names.map { |name| name.split("/")[-1] }).sort.uniq
   end
 
   # an array of all {Formula} names, which the tap formulae have the fully-qualified name
   def self.full_names
-    core_names + tap_names
+    @full_names ||= core_names + tap_names
   end
 
   def self.each
@@ -645,14 +671,16 @@ class Formula
 
   # An array of all installed {Formula}
   def self.installed
-    return [] unless HOMEBREW_CELLAR.directory?
-
-    HOMEBREW_CELLAR.subdirs.map do |rack|
-      begin
-        Formulary.from_rack(rack)
-      rescue FormulaUnavailableError, TapFormulaAmbiguityError
-      end
-    end.compact
+    @installed ||= if HOMEBREW_CELLAR.directory?
+      HOMEBREW_CELLAR.subdirs.map do |rack|
+        begin
+          Formulary.from_rack(rack)
+        rescue FormulaUnavailableError, TapFormulaAmbiguityError
+        end
+      end.compact
+    else
+      []
+    end
   end
 
   def self.aliases
@@ -714,6 +742,7 @@ class Formula
   def to_hash
     hsh = {
       "name" => name,
+      "full_name" => full_name,
       "desc" => desc,
       "homepage" => homepage,
       "versions" => {
@@ -730,6 +759,15 @@ class Formula
       "conflicts_with" => conflicts.map(&:name),
       "caveats" => caveats
     }
+
+    hsh["requirements"] = requirements.map do |req|
+      {
+        "name" => req.name,
+        "default_formula" => req.default_formula,
+        "cask" => req.cask,
+        "download" => req.download
+      }
+    end
 
     hsh["options"] = options.map { |opt|
       { "option" => opt.flag, "description" => opt.description }
@@ -908,8 +946,17 @@ class Formula
   def stage
     active_spec.stage do
       @buildpath = Pathname.pwd
-      yield
-      @buildpath = nil
+      env_home = buildpath/".brew_home"
+      mkdir_p env_home
+
+      old_home, ENV["HOME"] = ENV["HOME"], env_home
+
+      begin
+        yield
+      ensure
+        @buildpath = nil
+        ENV["HOME"] = old_home
+      end
     end
   end
 
@@ -1157,4 +1204,3 @@ class Formula
     end
   end
 end
-
